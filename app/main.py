@@ -1,3 +1,5 @@
+# app/main.py
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -38,14 +40,33 @@ async def read_index():
 
 @app.get("/health", tags=["System"])
 def health_check():
-    from app.db.session import db_pool
+    from app.db.session import get_db_connection
     from app.services.rag_service import rag_service
     
-    db_status = "connected" if db_pool and db_pool.get_connection().is_connected() else "disconnected"
+    db_status = "disconnected"
+    try:
+        with get_db_connection() as conn:
+            # Coba jalankan query sederhana untuk memastikan koneksi hidup
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+            db_status = "connected"
+    except Exception:
+        db_status = "disconnected"
+
     rag_status = "connected" if rag_service.is_ready else "disconnected"
     
+    # Periksa apakah RAG service punya LLM (model bahasa)
+    llm_status = "unknown"
+    if hasattr(rag_service, 'retrieval_chain') and rag_service.retrieval_chain:
+        if hasattr(rag_service.retrieval_chain.combine_docs_chain, 'llm'):
+            llm_status = "connected"
+        else:
+            llm_status = "disconnected"
+    
     return {
-        "status": "healthy" if db_status == "connected" and rag_status == "connected" else "degraded",
+        "status": "healthy" if db_status == "connected" and rag_status == "connected" and llm_status == "connected" else "degraded",
         "database": db_status,
-        "llm_ollama": rag_status
+        "llm_ollama": llm_status
     }
