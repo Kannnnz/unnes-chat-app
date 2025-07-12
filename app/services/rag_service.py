@@ -16,7 +16,6 @@ import threading
 
 from app.core import config
 
-# Kunci untuk sinkronisasi thread agar tidak terjadi race condition saat membuat index
 index_lock = threading.Lock()
 
 def load_and_split_document(file_path: Path):
@@ -75,8 +74,9 @@ class RAGService:
 
     def _create_retrieval_chain(self):
         llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3, convert_system_message_to_human=True)
-        prompt_template = "Gunakan potongan konteks berikut untuk menjawab pertanyaan.\nKonteks: {context}\nPertanyaan: {question}\nJawaban yang membantu:"
-        prompt = PromptTemplate(template=template=prompt_template, input_variables=["context", "question"])
+        # PERBAIKAN DI SINI: Menghapus duplikasi `template=`
+        prompt_template_text = "Gunakan potongan konteks berikut untuk menjawab pertanyaan.\nKonteks: {context}\nPertanyaan: {question}\nJawaban yang membantu:"
+        prompt = PromptTemplate(template=prompt_template_text, input_variables=["context", "question"])
         
         if self.vector_store:
             self.retrieval_chain = RetrievalQA.from_chain_type(
@@ -85,7 +85,6 @@ class RAGService:
                 chain_type_kwargs={"prompt": prompt}
             )
         else:
-            # Jika belum ada index, chain belum bisa dibuat
             self.retrieval_chain = None
 
     def add_documents_to_index(self, documents: list[Document]):
@@ -93,17 +92,13 @@ class RAGService:
             if not documents:
                 return
 
-            # Jika index belum ada, buat dari awal (Lazy Creation)
             if self.vector_store is None:
                 print("✨ Creating new FAISS index from first document batch...")
                 self.vector_store = FAISS.from_documents(documents, self.embeddings)
-                # Setelah dibuat, langsung buat chain-nya
                 self._create_retrieval_chain()
             else:
-                # Jika sudah ada, tambahkan saja
                 self.vector_store.add_documents(documents)
             
-            # Selalu simpan perubahan
             self.vector_store.save_local(
                 folder_path=str(config.FAISS_INDEX_PATH.parent),
                 index_name=config.FAISS_INDEX_PATH.stem
