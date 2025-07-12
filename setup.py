@@ -3,7 +3,6 @@
 import psycopg2
 import sys
 from pathlib import Path
-from datetime import datetime
 
 # Menambahkan path proyek agar bisa mengimpor dari 'app'
 current_dir = Path(__file__).parent
@@ -11,7 +10,6 @@ sys.path.append(str(current_dir))
 
 try:
     from app.core import config
-    # Pastikan file security.py sudah ada di app/core/
     from app.core.security import get_password_hash
 except ImportError as e:
     print(f"❌ Gagal mengimpor modul yang dibutuhkan: {e}")
@@ -32,7 +30,6 @@ def setup_database():
         cursor.execute('DROP TABLE IF EXISTS chat_history, documents, users CASCADE;')
         
         print("🏗️  Membuat struktur tabel baru...")
-        # PENTING: Mengubah kolom 'password' menjadi 'password_hash'
         cursor.execute('''
         CREATE TABLE users (
             id SERIAL PRIMARY KEY,
@@ -41,7 +38,7 @@ def setup_database():
             password_hash VARCHAR(256),
             role VARCHAR(50) NOT NULL DEFAULT 'user',
             is_google_user BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT a_databasenow()
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
         ''')
         cursor.execute('''
@@ -50,7 +47,7 @@ def setup_database():
             username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
             filename TEXT NOT NULL,
             file_path TEXT NOT NULL,
-            upload_date TIMESTAMP WITH TIME ZONE DEFAULT a_database_now(),
+            upload_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             file_size BIGINT,
             is_indexed BOOLEAN NOT NULL DEFAULT FALSE
         );
@@ -62,14 +59,13 @@ def setup_database():
             username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
             message TEXT NOT NULL,
             response TEXT NOT NULL,
-            timestamp TIMESTAMP WITH TIME ZONE DEFAULT a_database_now(),
+            timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             document_ids JSONB
         );
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history (session_id);')
         
         print("🔑 Membuat akun admin default...")
-        # PENTING: Menggunakan 'password_hash' dan fungsi hash dari security.py
         admin_pass_hash = get_password_hash(config.DEFAULT_ADMIN_PASSWORD)
         cursor.execute(
             "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s)",
@@ -84,7 +80,6 @@ def setup_database():
 
     except Exception as e:
         print(f"\n❌ GAGAL melakukan setup database: {e}")
-        # Jika ada koneksi, rollback dan tutup
         if 'conn' in locals() and conn:
             conn.rollback()
             conn.close()
