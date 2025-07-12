@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from datetime import datetime
 from psycopg2.extras import DictCursor
+import traceback
 
 from app.core import config
 from app.db.session import get_db_connection
@@ -17,10 +18,8 @@ from app.schemas.document import DocumentInfo
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 def _process_and_index_file(doc_id: str, file_path: Path, filename: str, owner: str):
-    """
-    Fungsi ini berjalan di background untuk memproses dan mengindeks file.
-    """
-    print(f"Starting background processing for: {filename}")
+    """Fungsi ini berjalan di background untuk memproses dan mengindeks file."""
+    print(f"✅ Starting background processing for: {filename}")
     try:
         chunks = load_and_split_document(file_path)
         if chunks:
@@ -33,11 +32,12 @@ def _process_and_index_file(doc_id: str, file_path: Path, filename: str, owner: 
                 with conn.cursor() as cursor:
                     cursor.execute("UPDATE documents SET is_indexed = TRUE WHERE id = %s", (doc_id,))
                     conn.commit()
-            print(f"Successfully processed and indexed: {filename}")
+            print(f"✅ Successfully processed and indexed: {filename}")
         else:
-            print(f"No content to process for: {filename}")
+            print(f"⚠️ No content to process for: {filename}. It might be empty or unsupported.")
     except Exception as e:
-        print(f"❌ BACKGROUND TASK FAILED for {filename}: {e}")
+        print(f"❌ BACKGROUND TASK FAILED for {filename}:")
+        traceback.print_exc()
 
 @router.post("/upload")
 async def upload_documents(
@@ -59,8 +59,8 @@ async def upload_documents(
         file_path = user_dir / f"{doc_id}{Path(file.filename).suffix}"
         
         try:
-            content = await file.read()
             with open(file_path, "wb") as f:
+                content = await file.read()
                 f.write(content)
 
             with get_db_connection() as conn:
@@ -71,7 +71,6 @@ async def upload_documents(
                     conn.commit()
 
             background_tasks.add_task(_process_and_index_file, doc_id, file_path, file.filename, username)
-            
             uploaded_docs_info.append({"id": doc_id, "filename": file.filename, "upload_date": datetime.now()})
 
         except Exception as e:
@@ -79,14 +78,13 @@ async def upload_documents(
                 file_path.unlink()
             raise HTTPException(status_code=500, detail=f"Gagal menyimpan file {file.filename}: {e}")
 
-    # PERBAIKAN DI SINI: Mengubah 'uploaded_files' menjadi 'uploaded_documents'
     return {"message": "File diterima dan sedang diproses.", "uploaded_documents": uploaded_docs_info}
 
 @router.get("/documents", response_model=list[DocumentInfo])
 def get_documents(current_user: UserInDB = Depends(get_current_user)):
     with get_db_connection() as conn:
         cursor = conn.cursor(cursor_factory=DictCursor)
-        cursor.execute("SELECT id, filename, upload_date FROM documents WHERE username = %s ORDER BY upload_date DESC", (current_user.username,))
+        cursor.execute("SELECT id, filename, upload_date, is_indexed FROM documents WHERE username = %s ORDER BY upload_date DESC", (current_user.username,))
         docs = cursor.fetchall()
         cursor.close()
         return [dict(row) for row in docs]
