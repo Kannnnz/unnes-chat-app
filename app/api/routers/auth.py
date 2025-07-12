@@ -1,94 +1,77 @@
-# file: setup.py
+# file: app/api/routers/auth.py
 
-import psycopg2
-import sys
-from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from psycopg2.extras import DictCursor
+from google.oauth2 import id_token
+from google.auth.transport import requests
 from datetime import datetime
 
-# Menambahkan path proyek agar bisa mengimpor dari 'app'
-current_dir = Path(__file__).parent
-sys.path.append(str(current_dir))
+from app.core import security, config
+from app.db.session import get_db_connection
+from app.schemas.user import UserCreate, Token, GoogleToken, UserPublic
+from app.api.deps import get_current_user, UserInDB
 
-try:
-    from app.core import config
-    # Pastikan file security.py sudah ada di app/core/
-    from app.core.security import get_password_hash
-except ImportError as e:
-    print(f"❌ Gagal mengimpor modul yang dibutuhkan: {e}")
-    sys.exit(1)
+router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-def setup_database():
-    try:
-        if not config.DATABASE_URL:
-            print("❌ DATABASE_URL tidak ditemukan. Proses setup dibatalkan.")
-            return False
-            
-        print("🚀 Mencoba terhubung ke database PostgreSQL...")
-        conn = psycopg2.connect(config.DATABASE_URL)
-        cursor = conn.cursor()
-        print("✅ Berhasil terhubung.")
-        
-        print("⚠️  Menghapus tabel lama (jika ada)...")
-        cursor.execute('DROP TABLE IF EXISTS chat_history, documents, users CASCADE;')
-        
-        print("🏗️  Membuat struktur tabel baru...")
-        # PENTING: Mengubah kolom 'password' menjadi 'password_hash'
-        cursor.execute('''
-        CREATE TABLE users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(255) UNIQUE NOT NULL,
-            email VARCHAR(255) UNIQUE NOT NULL,
-            password_hash VARCHAR(256),
-            role VARCHAR(50) NOT NULL DEFAULT 'user',
-            is_google_user BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT a_databasenow()
-        );
-        ''')
-        cursor.execute('''
-        CREATE TABLE documents (
-            id UUID PRIMARY KEY,
-            username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-            filename TEXT NOT NULL,
-            file_path TEXT NOT NULL,
-            upload_date TIMESTAMP WITH TIME ZONE DEFAULT a_database_now(),
-            file_size BIGINT,
-            is_indexed BOOLEAN NOT NULL DEFAULT FALSE
-        );
-        ''')
-        cursor.execute('''
-        CREATE TABLE chat_history (
-            id SERIAL PRIMARY KEY,
-            session_id VARCHAR(255) NOT NULL,
-            username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-            message TEXT NOT NULL,
-            response TEXT NOT NULL,
-            timestamp TIMESTAMP WITH TIME ZONE DEFAULT a_database_now(),
-            document_ids JSONB
-        );
-        ''')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history (session_id);')
-        
-        print("🔑 Membuat akun admin default...")
-        # PENTING: Menggunakan 'password_hash' dan fungsi hash dari security.py
-        admin_pass_hash = get_password_hash(config.DEFAULT_ADMIN_PASSWORD)
-        cursor.execute(
-            "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s)",
-            ('admin_unnes', 'admin@mail.unnes.ac.id', admin_pass_hash, 'admin')
-        )
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        print("✅ Setup database selesai dengan sukses!")
-        return True
-
-    except Exception as e:
-        print(f"\n❌ GAGAL melakukan setup database: {e}")
-        # Jika ada koneksi, rollback dan tutup
-        if 'conn' in locals() and conn:
+@router.post("/register", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
+def register_user(user: UserCreate):
+    hashed_password = security.get_password_hash(user.password)
+    role = 'admin' if user.email.endswith('@mail.unnes.ac.id') else 'user'
+    with get_db_connection() as conn:
+        cursor = conn.cursor(cursor_factory=DictCursor)
+        try:
+            cursor.execute(
+                "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s) RETURNING id, username, email, role, created_at",
+                (user.username, user.email, hashed_password, role)
+            )
+            new_user = cursor.fetchone()
+            conn.commit()
+            cursor.close()
+            return new_user
+        except Exception:
             conn.rollback()
-            conn.close()
-        return False
+            raise HTTPException(status_code=400, detail="Username atau email mungkin sudah ada.")
 
-if __name__ == "__main__":
-    setup_database()
+@router.post("/token", response_model=Token)
+def login_with_password(form_data: OAuth2PasswordRequestForm = Depends()):
+    with get_db_connection() as conn:
+        cursor = conn.cursor(cursor_factory=DictCursor)
+        cursor.execute("SELECT * FROM users WHERE username = %s", (form_data.username,))
+        user = cursor.fetchone()
+        cursor.close()
+    if not user or not user["password_hash"] or not security.verify_password(form_data.password, user["password_hash"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
+    access_token = security.create_access_token(data={"sub": user["username"]})
+    return {"access_token": access_token, "token_type": "bearer", "role": user["role"]}
+
+@router.post("/google", response_model=Token)
+def login_with_google(token_data: GoogleToken):
+    if not config.GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google Login not configured.")
+    try:
+        id_info = id_token.verify_oauth2_token(token_data.token, requests.Request(), config.GOOGLE_CLIENT_ID)
+        email = id_info['email']
+        if not (email.endswith('@students.unnes.ac.id') or email.endswith('@mail.unnes.ac.id')):
+            raise HTTPException(status_code=403, detail="Hanya email UNNES yang diizinkan.")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Could not validate Google token")
+
+    username = email.split('@')[0]
+    with get_db_connection() as conn:
+        cursor = conn.cursor(cursor_factory=DictCursor)
+        cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+        if not user:
+            role = 'admin' if email.endswith('@mail.unnes.ac.id') else 'user'
+            cursor.execute("INSERT INTO users (username, email, role, is_google_user) VALUES (%s, %s, %s, %s) RETURNING *",
+                           (username, email, role, True))
+            user = cursor.fetchone()
+            conn.commit()
+        cursor.close()
+    access_token = security.create_access_token(data={"sub": user["username"]})
+    return {"access_token": access_token, "token_type": "bearer", "role": user["role"]}
+
+@router.get("/profile", response_model=UserPublic)
+def read_current_user(current_user: UserInDB = Depends(get_current_user)):
+    return current_user
