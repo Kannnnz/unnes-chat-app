@@ -3,6 +3,7 @@
 fastapi
 uvicorn[standard]
 gunicorn
+python-multipart
 
 # Configuration and Database
 python-dotenv
