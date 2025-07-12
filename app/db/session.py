@@ -1,10 +1,10 @@
+# file: app/db/session.py
 
 import psycopg2
 from contextlib import contextmanager
 from fastapi import HTTPException
 from app.core import config
 
-# Neon memberikan satu URL koneksi, kita akan menggunakannya.
 DATABASE_URL = config.DATABASE_URL
 
 @contextmanager
