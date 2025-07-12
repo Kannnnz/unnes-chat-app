@@ -1,3 +1,5 @@
+# file: app/api/routers/documents.py
+
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks
 from typing import List
 import uuid
@@ -27,7 +29,6 @@ def _process_and_index_file(doc_id: str, file_path: Path, filename: str, owner: 
             
             rag_service.add_documents_to_index(chunks)
             
-            # Update status di database bahwa indexing sudah selesai
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("UPDATE documents SET is_indexed = TRUE WHERE id = %s", (doc_id,))
@@ -37,9 +38,6 @@ def _process_and_index_file(doc_id: str, file_path: Path, filename: str, owner: 
             print(f"No content to process for: {filename}")
     except Exception as e:
         print(f"❌ BACKGROUND TASK FAILED for {filename}: {e}")
-        # Di sini Anda bisa menambahkan logika untuk menandai file sebagai gagal proses di DB
-        pass
-
 
 @router.post("/upload")
 async def upload_documents(
@@ -65,7 +63,6 @@ async def upload_documents(
             with open(file_path, "wb") as f:
                 f.write(content)
 
-            # 1. Simpan info dokumen ke DB dengan status is_indexed = FALSE
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     query = "INSERT INTO documents (id, username, filename, file_path, upload_date, file_size, is_indexed) VALUES (%s, %s, %s, %s, %s, %s, %s)"
@@ -73,21 +70,17 @@ async def upload_documents(
                     cursor.execute(query, values)
                     conn.commit()
 
-            # 2. Tambahkan proses berat ke background task
             background_tasks.add_task(_process_and_index_file, doc_id, file_path, file.filename, username)
             
-            # 3. Siapkan respons sukses untuk dikirim langsung ke user
             uploaded_docs_info.append({"id": doc_id, "filename": file.filename, "upload_date": datetime.now()})
 
         except Exception as e:
-            # Jika ada error sebelum background task, hapus file yang mungkin sudah terbuat
             if file_path.exists():
                 file_path.unlink()
             raise HTTPException(status_code=500, detail=f"Gagal menyimpan file {file.filename}: {e}")
 
-    # 4. Kirim respons sukses ke user SEGERA, tanpa menunggu indexing selesai.
-    return {"message": "File diterima dan sedang diproses di latar belakang.", "uploaded_files": uploaded_docs_info}
-
+    # PERBAIKAN DI SINI: Mengubah 'uploaded_files' menjadi 'uploaded_documents'
+    return {"message": "File diterima dan sedang diproses.", "uploaded_documents": uploaded_docs_info}
 
 @router.get("/documents", response_model=list[DocumentInfo])
 def get_documents(current_user: UserInDB = Depends(get_current_user)):
