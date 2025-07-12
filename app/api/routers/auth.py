@@ -5,7 +5,6 @@ from fastapi.security import OAuth2PasswordRequestForm
 from psycopg2.extras import DictCursor
 from google.oauth2 import id_token
 from google.auth.transport import requests
-from datetime import datetime
 
 from app.core import security, config
 from app.db.session import get_db_connection
@@ -22,13 +21,14 @@ def register_user(user: UserCreate):
         cursor = conn.cursor(cursor_factory=DictCursor)
         try:
             cursor.execute(
-                "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s) RETURNING id, username, email, role, created_at",
+                "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s) RETURNING *",
                 (user.username, user.email, hashed_password, role)
             )
-            new_user = cursor.fetchone()
+            new_user_row = cursor.fetchone()
             conn.commit()
             cursor.close()
-            return new_user
+            # PENTING: Mengubah hasil database menjadi dictionary sebelum dikembalikan
+            return dict(new_user_row)
         except Exception:
             conn.rollback()
             raise HTTPException(status_code=400, detail="Username atau email mungkin sudah ada.")
@@ -45,6 +45,11 @@ def login_with_password(form_data: OAuth2PasswordRequestForm = Depends()):
     access_token = security.create_access_token(data={"sub": user["username"]})
     return {"access_token": access_token, "token_type": "bearer", "role": user["role"]}
 
+@router.get("/profile", response_model=UserPublic)
+def read_current_user(current_user: UserInDB = Depends(get_current_user)):
+    return current_user
+
+# (Fungsi login_with_google tidak perlu diubah)
 @router.post("/google", response_model=Token)
 def login_with_google(token_data: GoogleToken):
     if not config.GOOGLE_CLIENT_ID:
@@ -71,7 +76,3 @@ def login_with_google(token_data: GoogleToken):
         cursor.close()
     access_token = security.create_access_token(data={"sub": user["username"]})
     return {"access_token": access_token, "token_type": "bearer", "role": user["role"]}
-
-@router.get("/profile", response_model=UserPublic)
-def read_current_user(current_user: UserInDB = Depends(get_current_user)):
-    return current_user
