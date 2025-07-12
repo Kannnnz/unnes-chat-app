@@ -8,15 +8,19 @@ from pathlib import Path
 
 from app.core import config
 from app.api.routers import auth, documents, chat, admin
+from app.db.session import get_db_connection
+from app.services.rag_service import rag_service
 
+# Membuat direktori yang diperlukan jika belum ada
 config.UPLOAD_DIR.mkdir(exist_ok=True)
 config.VECTOR_STORE_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(
-    title="UNNES Document Chat System (Structured Version)",
-    version="7.0.0"
+    title="UNNES Document Chat System",
+    version="8.0.0"
 )
 
+# Middleware CORS untuk mengizinkan semua origin
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,28 +29,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_V1_PREFIX = "/api/v1"
-app.include_router(auth.router, prefix=f"{API_V1_PREFIX}/auth")
-app.include_router(documents.router, prefix=f"{API_V1_PREFIX}/documents")
-app.include_router(chat.router, prefix=f"{API_V1_PREFIX}/chat")
-app.include_router(admin.router, prefix=f"{API_V1_PREFIX}/admin")
+# Menyertakan semua router API dengan prefix dari config
+app.include_router(auth.router, prefix=config.API_V1_PREFIX)
+app.include_router(documents.router, prefix=config.API_V1_PREFIX)
+app.include_router(chat.router, prefix=config.API_V1_PREFIX)
+app.include_router(admin.router, prefix=config.API_V1_PREFIX)
 
+# Mounting direktori statis untuk frontend (HTML, CSS, JS)
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/", response_class=FileResponse, include_in_schema=False)
 async def read_index():
+    """Menyajikan file index.html sebagai halaman utama."""
     return FileResponse(STATIC_DIR / 'index.html')
 
 @app.get("/health", tags=["System"])
 def health_check():
-    from app.db.session import get_db_connection
-    from app.services.rag_service import rag_service
-    
+    """Endpoint untuk memeriksa status kesehatan sistem."""
     db_status = "disconnected"
     try:
         with get_db_connection() as conn:
-            # Coba jalankan query sederhana untuk memastikan koneksi hidup
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             cursor.fetchone()
@@ -57,16 +60,20 @@ def health_check():
 
     rag_status = "connected" if rag_service.is_ready else "disconnected"
     
-    # Periksa apakah RAG service punya LLM (model bahasa)
     llm_status = "unknown"
-    if hasattr(rag_service, 'retrieval_chain') and rag_service.retrieval_chain:
-        if hasattr(rag_service.retrieval_chain.combine_docs_chain, 'llm'):
+    try:
+        if rag_service.retrieval_chain.combine_docs_chain.llm:
             llm_status = "connected"
         else:
             llm_status = "disconnected"
+    except Exception:
+        llm_status = "disconnected"
     
+    final_status = "healthy" if all(s == "connected" for s in [db_status, rag_status, llm_status]) else "degraded"
+
     return {
-        "status": "healthy" if db_status == "connected" and rag_status == "connected" and llm_status == "connected" else "degraded",
+        "status": final_status,
         "database": db_status,
-        "llm_ollama": llm_status
+        "rag_service": rag_status,
+        "llm_google_gemini": llm_status
     }
