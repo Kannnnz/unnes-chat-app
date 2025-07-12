@@ -1,5 +1,3 @@
-# app/core/config.py
-
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -39,3 +37,6 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 VECTOR_STORE_DIR = BASE_DIR / "vector_store"
+
+# --- Konfigurasi RAG Service (Vector Store) ---
+FAISS_INDEX_PATH = VECTOR_STORE_DIR / "unnes_docs.faiss"
