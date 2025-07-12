@@ -1,9 +1,9 @@
 // UNNES Document Chat System - Main JavaScript
-// Versi: 7.0.2 (Google Sign-In Integration)
+// Versi: 8.0.0 (Final Deployment Fix)
 
 // --- GLOBAL STATE & CONFIGURATION ---
 const API_BASE_URL = '/api/v1';
-// PENTING: Ganti dengan Client ID Anda yang asli dari Google Cloud Console
+// PENTING: Pastikan Client ID ini sesuai dengan yang ada di Google Cloud Console Anda
 const GOOGLE_CLIENT_ID = "589754605755-k35ogen4efe92mpfjeddd8eblq6pm0l4.apps.googleusercontent.com"; 
 
 let currentUser = null;
@@ -88,8 +88,8 @@ const elements = {
 };
 
 // --- UTILITY FUNCTIONS ---
-function showLoading(show = true) { elements.loadingOverlay.style.display = show ? 'flex' : 'none'; }
-function hideLoading() { elements.loadingOverlay.style.display = 'none'; }
+function showLoading(show = true) { if(elements.loadingOverlay) elements.loadingOverlay.style.display = show ? 'flex' : 'none'; }
+function hideLoading() { if(elements.loadingOverlay) elements.loadingOverlay.style.display = 'none'; }
 function showAlert(message, type = 'info', duration = 5000) {
     if(!elements.alertContainer) return;
     const alertDiv = document.createElement('div');
@@ -154,22 +154,27 @@ async function apiCall(endpoint, options = {}) {
 
     try {
         const response = await fetch(url, config);
+        const responseText = await response.text();
+        const data = responseText ? JSON.parse(responseText) : {};
+
         if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-            throw new Error(errorData.detail || `HTTP error ${response.status}`);
+            if (response.status === 401) {
+                logout();
+            }
+            throw new Error(data.detail || `HTTP error ${response.status}`);
         }
-        return response.status === 204 ? null : await response.json();
+        return data;
     } catch (error) {
         console.error('API Call Error:', error.message, `on ${endpoint}`);
         throw error;
     }
 }
 
-// --- FUNGSI BARU: Callback setelah login Google berhasil ---
+// --- GOOGLE SIGN-IN ---
 async function handleCredentialResponse(response) {
     showLoading();
     try {
-        const payload = { credential: response.credential };
+        const payload = { token: response.credential };
         const data = await apiCall('/auth/google', { method: 'POST', body: payload });
         
         currentToken = data.access_token;
@@ -225,15 +230,21 @@ async function register(username, email, password) {
 }
 
 async function loadUserProfile() {
-    const data = await apiCall('/auth/profile');
-    currentUser = data;
-    elements.navUsername.textContent = sanitizeText(currentUser.username);
-    elements.navRole.textContent = sanitizeText(currentUser.role);
-    elements.profileUsernameDisplay.textContent = sanitizeText(currentUser.username);
-    elements.profileEmailDisplay.textContent = sanitizeText(currentUser.email);
-    elements.profileRoleDisplay.textContent = sanitizeText(currentUser.role);
-    elements.navUserInfo.style.display = 'flex';
-    elements.navAdminItem.style.display = currentUser.role === 'admin' ? 'list-item' : 'none';
+    try {
+        const data = await apiCall('/auth/profile');
+        currentUser = data;
+        elements.navUsername.textContent = sanitizeText(currentUser.username);
+        elements.navRole.textContent = sanitizeText(currentUser.role);
+        elements.profileUsernameDisplay.textContent = sanitizeText(currentUser.username);
+        elements.profileEmailDisplay.textContent = sanitizeText(currentUser.email);
+        elements.profileRoleDisplay.textContent = sanitizeText(currentUser.role);
+        elements.navUserInfo.style.display = 'flex';
+        elements.navAdminItem.style.display = currentUser.role === 'admin' ? 'list-item' : 'none';
+    } catch (error) {
+        // apiCall handles 401 logout, so we just catch other potential errors here
+        console.error("Failed to load user profile:", error);
+        logout();
+    }
 }
 
 function logout() {
@@ -326,10 +337,12 @@ async function performUploadDocuments() {
     selectedUploadFiles.forEach(file => formData.append('files', file));
     try {
         const data = await apiCall('/documents/upload', { method: 'POST', body: formData });
-        showAlert(`${data.uploaded_documents.length} dokumen berhasil diupload!`, 'success');
+        showAlert(data.message || `${data.uploaded_documents.length} dokumen berhasil diterima!`, 'success');
         selectedUploadFiles = [];
         updateSelectedFilesUI();
         elements.fileInput.value = '';
+        // Refresh document list after a short delay to allow background processing to start
+        setTimeout(loadUserDocuments, 2000);
     } catch (error) {
         showAlert(`Error Upload: ${error.message}`, 'error');
     } finally {
@@ -337,12 +350,11 @@ async function performUploadDocuments() {
     }
 }
 
-
 // --- DOCUMENT & CHAT LOGIC ---
 async function loadUserDocuments() {
     try {
         const data = await apiCall('/documents/documents');
-        renderDocumentList(data.documents || [], elements.documentsContainer, true);
+        renderDocumentList(data || [], elements.documentsContainer, true);
     } catch (error) {
         showAlert(`Gagal memuat dokumen: ${error.message}`, 'error');
         renderEmptyState(elements.documentsContainer, 'Gagal memuat dokumen Anda.');
@@ -367,8 +379,11 @@ function renderDocumentList(documents, containerElement, isUserView = true) {
                 <p class="document-meta">Diupload: ${formatDate(doc.upload_date)}</p>
                 ${!isUserView ? `<p class="document-meta">Oleh: ${sanitizeText(doc.username)}</p>` : ''}
             </div>
+            <div class="document-status">
+                ${doc.is_indexed ? '<span class="status-indexed">Terindeks</span>' : '<span class="status-processing">Memproses...</span>'}
+            </div>
             <div class="document-actions">
-                ${isUserView ? `<button class="btn btn-primary btn-small action-chat" data-doc-id="${doc.id}">Chat</button>` : ''}
+                ${isUserView ? `<button class="btn btn-primary btn-small action-chat" data-doc-id="${doc.id}" ${!doc.is_indexed ? 'disabled' : ''}>Chat</button>` : ''}
                 ${currentUser.role === 'admin' ? `<button class="btn btn-danger btn-small action-delete-doc" data-doc-id="${doc.id}" data-filename="${sanitizeText(doc.filename)}">Hapus</button>` : ''}
             </div>
         `;
@@ -377,14 +392,14 @@ function renderDocumentList(documents, containerElement, isUserView = true) {
 }
 
 function createSessionId(docIds) {
-    if (!docIds || docIds.length === 0) return null;
+    if (!docIds || docIds.length === 0) return `global_session_${currentUser.username}`;
     return [...docIds].sort().join('_');
 }
 
 async function loadDocumentsForChat() {
     try {
         const data = await apiCall('/documents/documents');
-        renderChatDocumentSelectionList(data.documents || []);
+        renderChatDocumentSelectionList(data || []);
         resetChatUI();
     } catch (error) {
         showAlert(`Gagal memuat dokumen untuk chat: ${error.message}`, 'error');
@@ -394,14 +409,17 @@ async function loadDocumentsForChat() {
 function renderChatDocumentSelectionList(documents) {
     const listContainer = elements.chatDocumentList;
     listContainer.innerHTML = '';
-    document.getElementById('start-chat-session-btn')?.remove();
+    const existingButton = document.getElementById('start-chat-session-btn');
+    if(existingButton) existingButton.remove();
 
-    if (!documents || documents.length === 0) {
-        listContainer.innerHTML = `<div class="empty-state-small"><p>Anda belum mengupload dokumen.</p></div>`;
+    const indexedDocs = documents.filter(d => d.is_indexed);
+
+    if (indexedDocs.length === 0) {
+        listContainer.innerHTML = `<div class="empty-state-small"><p>Tidak ada dokumen yang siap untuk di-chat.</p></div>`;
         return;
     }
 
-    documents.forEach(doc => {
+    indexedDocs.forEach(doc => {
         const item = document.createElement('label');
         item.className = 'chat-document-item';
         item.innerHTML = `
@@ -566,29 +584,22 @@ function renderPredefinedQuestions() {
         btn.addEventListener('click', () => {
             const questionText = btn.textContent;
             elements.chatInput.value = questionText;
-            submitChatMessage(questionText);
+            submitChatMessage(); // Let submitChatMessage handle the rest
         });
     });
 }
 
 async function loadSystemInfoForProfile() {
     try {
-        const response = await fetch('/health');
-        if (!response.ok) {
-             const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-             throw new Error(errorData.detail || `HTTP error ${response.status}`);
-        }
-        const data = await response.json();
-
+        const data = await apiCall('/health');
         const renderStatus = (label, status) => {
             const color = status === 'connected' ? 'var(--color-success)' : 'var(--color-error)';
             const text = status.charAt(0).toUpperCase() + status.slice(1);
             return `<p><strong>${label}:</strong> <span style="color: ${color};">${sanitizeText(text)}</span></p>`;
         };
         elements.systemInfoContent.innerHTML = `
-            ${renderStatus('Status Server Backend', data.status || 'unknown')}
             ${renderStatus('Koneksi Database', data.database || 'unknown')}
-            ${renderStatus('Koneksi Ollama', data.llm_ollama || 'unknown')}
+            ${renderStatus('Layanan RAG', data.rag_service || 'unknown')}
         `;
     } catch (error) {
         elements.systemInfoContent.innerHTML = '<p>Gagal memuat informasi sistem.</p>';
@@ -663,32 +674,7 @@ async function loadAdminAllDocuments() {
 }
 
 async function loadAdminSystemActivity() {
-    const data = await apiCall('/admin/activity');
-    renderAdminActivityList(data.activity || []);
-}
-
-function renderAdminActivityList(activities) {
-    const container = elements.adminActivityList;
-    container.innerHTML = '';
-    if (!activities || activities.length === 0) {
-        return renderEmptyState(container, 'Tidak ada aktivitas terbaru.');
-    }
-    activities.forEach(item => {
-        const itemDiv = document.createElement('div');
-        itemDiv.className = 'admin-item';
-        const docIds = JSON.parse(item.document_ids || '[]');
-        itemDiv.innerHTML = `
-           <div class="admin-item-info">
-                <strong>${sanitizeText(item.username)}:</strong> ${sanitizeText(item.message)}
-                <div class="item-email">Jawaban: ${sanitizeText(item.response)}</div>
-                <div class="item-meta">
-                    <span>Dok. ID: ${docIds.join(', ') || 'N/A'}</span> | 
-                    <span>${formatDate(item.timestamp)}</span>
-                </div>
-            </div>
-        `;
-        container.appendChild(itemDiv);
-    });
+    renderEmptyState(elements.adminActivityList, 'Fitur log aktivitas belum diimplementasikan.');
 }
 
 async function handleDeleteUser(username) {
@@ -761,7 +747,7 @@ function initializeEventListeners() {
                     checkbox.checked = true;
                     checkbox.dispatchEvent(new Event('change', { bubbles: true }));
                 }
-            }, 100);
+            }, 200);
         }
     });
 
@@ -789,35 +775,37 @@ function initializeEventListeners() {
         }
     });
     
-    elements.adminDocumentsList?.addEventListener('click', (e) => {
+    const docListContainer = document.getElementById('admin-documents-list');
+    docListContainer?.addEventListener('click', (e) => {
         const deleteBtn = e.target.closest('.action-delete-doc');
         if (deleteBtn) {
             handleDeleteDocument(deleteBtn.dataset.docId, deleteBtn.dataset.filename);
         }
     });
 
+
     elements.confirmationModal.confirmBtn?.addEventListener('click', () => { if (typeof confirmCallback === 'function') confirmCallback(); closeModal(); });
     elements.confirmationModal.cancelBtn?.addEventListener('click', closeModal);
 }
 
 async function initializeApp() {
-    console.log("Initializing application v7.0.2...");
+    console.log("Initializing application...");
     initializeEventListeners();
 
     // Inisialisasi Google Sign-In
     window.onload = function () {
       try {
         if (typeof google === 'undefined') {
-            console.error("Pustaka Google GSI tidak termuat.");
-            return;
+          console.error("Pustaka Google GSI tidak termuat.");
+          return;
         }
         google.accounts.id.initialize({
-            client_id: GOOGLE_CLIENT_ID, 
-            callback: handleCredentialResponse
+          client_id: GOOGLE_CLIENT_ID, 
+          callback: handleCredentialResponse
         });
         google.accounts.id.renderButton(
-            document.getElementById("google-btn-container"),
-            { theme: "outline", size: "large", type: "standard", text: "signin_with", shape: "rectangular" } 
+          document.getElementById("google-btn-container"),
+          { theme: "outline", size: "large", type: "standard", text: "signin_with", shape: "rectangular" } 
         );
       } catch (e) {
         console.error("Inisialisasi Google Sign-In gagal:", e);
