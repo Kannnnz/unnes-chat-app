@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 import shutil
+from psycopg2.extras import DictCursor
 
 from app.core import config
 from app.db.session import get_db_connection
@@ -27,7 +28,7 @@ def get_admin_stats(admin_user: dict = Depends(require_admin)):
 @router.get("/users", response_model=List[UserInDB], tags=["Admin"])
 def get_all_users(admin_user: dict = Depends(require_admin)):
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         cursor.execute("SELECT username, email, role, created_at FROM users ORDER BY created_at DESC")
         users = cursor.fetchall()
         cursor.close()
@@ -63,7 +64,7 @@ def delete_user(username: str, admin_user: dict = Depends(require_admin)):
 @router.get("/documents", response_model=List[DocumentDetail], tags=["Admin"])
 def get_all_documents_for_admin(admin_user: dict = Depends(require_admin)):
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         cursor.execute("SELECT id, username, filename, upload_date, file_size FROM documents ORDER BY upload_date DESC")
         documents = cursor.fetchall()
         cursor.close()
@@ -72,7 +73,7 @@ def get_all_documents_for_admin(admin_user: dict = Depends(require_admin)):
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Admin"])
 def delete_document(document_id: str, admin_user: dict = Depends(require_admin)):
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         cursor.execute("SELECT file_path FROM documents WHERE id = %s", (document_id,))
         doc = cursor.fetchone()
         if not doc:
@@ -95,7 +96,7 @@ def delete_document(document_id: str, admin_user: dict = Depends(require_admin))
 @router.get("/activity", tags=["Admin"])
 def get_admin_activity(admin_user: dict = Depends(require_admin)):
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         cursor.execute("SELECT username, message, response, timestamp, document_ids FROM chat_history ORDER BY timestamp DESC LIMIT 50")
         history = cursor.fetchall()
         cursor.close()
