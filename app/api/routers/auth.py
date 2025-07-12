@@ -5,7 +5,6 @@ from fastapi.security import OAuth2PasswordRequestForm
 from datetime import datetime, timedelta
 from psycopg2.extras import DictCursor
 
-# Import untuk Google Auth
 from google.oauth2 import id_token
 from google.auth.transport import requests
 
@@ -32,7 +31,7 @@ def register_user(user: UserCreate):
             conn.commit()
         except Exception as e:
             conn.rollback()
-            raise HTTPException(status_code=400, detail=f"Gagal mendaftarkan pengguna: {e}")
+            raise HTTPException(status_code=400, detail=f"Gagal mendaftarkan pengguna, kemungkinan username atau email sudah ada.")
         finally:
             cursor.close()
     
@@ -46,7 +45,7 @@ def login_with_password(form_data: OAuth2PasswordRequestForm = Depends()):
         user = cursor.fetchone()
         cursor.close()
     
-    if not user or not security.verify_password(form_data.password, user["password_hash"]):
+    if not user or not user["password_hash"] or not security.verify_password(form_data.password, user["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -89,13 +88,10 @@ def login_with_google(token_data: GoogleToken):
         user = cursor.fetchone()
 
         if not user:
-            # Pengguna baru dari Google
             role = 'admin' if email.endswith('@mail.unnes.ac.id') else 'user'
-            # Buat hash password acak karena pengguna ini hanya akan login via Google
-            dummy_password = security.get_password_hash(f"google_sso_{datetime.now().timestamp()}")
             cursor.execute(
-                "INSERT INTO users (username, email, password_hash, role, is_google_user) VALUES (%s, %s, %s, %s, %s) RETURNING *",
-                (username, email, dummy_password, role, True)
+                "INSERT INTO users (username, email, role, is_google_user) VALUES (%s, %s, %s, %s) RETURNING *",
+                (username, email, role, True)
             )
             user = cursor.fetchone()
             conn.commit()
@@ -108,6 +104,7 @@ def login_with_google(token_data: GoogleToken):
     )
 
     return {"access_token": access_token, "token_type": "bearer", "role": user["role"]}
+
 
 @router.get("/profile", response_model=UserPublic, tags=["User"])
 def read_current_user(current_user: UserInDB = Depends(get_current_user)):
