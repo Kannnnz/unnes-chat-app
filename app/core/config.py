@@ -11,7 +11,7 @@ VECTOR_STORE_DIR = BASE_DIR / "vector_store"
 FAISS_INDEX_PATH = VECTOR_STORE_DIR / "unnes_docs.faiss"
 
 # JWT Settings
-SECRET_KEY = os.getenv("APP_SECRET_KEY")
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
