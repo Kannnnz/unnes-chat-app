@@ -3,8 +3,8 @@
 import psycopg2
 import sys
 from pathlib import Path
+from datetime import datetime
 
-# Menambahkan path proyek agar bisa mengimpor dari 'app'
 current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
 
@@ -12,15 +12,11 @@ try:
     from app.core import config
     from app.core.security import get_password_hash
 except ImportError as e:
-    print(f"❌ Gagal mengimpor modul yang dibutuhkan: {e}")
+    print(f"❌ Gagal mengimpor modul: {e}. Pastikan file app/core/config.py dan app/core/security.py ada.")
     sys.exit(1)
 
 def setup_database():
     try:
-        if not config.DATABASE_URL:
-            print("❌ DATABASE_URL tidak ditemukan. Proses setup dibatalkan.")
-            return False
-            
         print("🚀 Mencoba terhubung ke database PostgreSQL...")
         conn = psycopg2.connect(config.DATABASE_URL)
         cursor = conn.cursor()
@@ -43,7 +39,7 @@ def setup_database():
         ''')
         cursor.execute('''
         CREATE TABLE documents (
-            id UUID PRIMARY KEY,
+            id VARCHAR(36) PRIMARY KEY,
             username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
             filename TEXT NOT NULL,
             file_path TEXT NOT NULL,
@@ -77,7 +73,6 @@ def setup_database():
         conn.close()
         print("✅ Setup database selesai dengan sukses!")
         return True
-
     except Exception as e:
         print(f"\n❌ GAGAL melakukan setup database: {e}")
         if 'conn' in locals() and conn:
