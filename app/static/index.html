@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UNNES Document Chat System</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>&#128172;</text></svg>">
+    <!-- Script Google Identity Services -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+    <div id="loading-overlay" class="loading-overlay" style="display: none;">
+        <div class="loading-spinner"></div>
+        <p>Memproses permintaan...</p>
+    </div>
+
+    <header id="header" class="header">
+        <div class="container header-container">
+            <div class="nav-brand">
+                <h1>UNNES Document Chat</h1>
+                <span class="subtitle">Sistem Analisis Dokumen Berbasis AI</span>
+            </div>
+            <div id="nav-user-info" class="nav-user-info" style="display: none;">
+                <span id="nav-username" aria-live="polite">Username</span>
+                <span id="nav-role" class="role-badge">user</span>
+                <button id="logout-btn" class="btn btn-secondary btn-small">Logout</button>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-container">
+        <section id="auth-section" class="auth-section" aria-labelledby="auth-heading">
+            <h2 id="auth-heading" class="visually-hidden">Autentikasi Pengguna</h2>
+            <div class="auth-container">
+                <div id="login-form" class="auth-form active">
+                    <h3>Masuk ke Sistem</h3>
+                    <!-- Tombol Google Login dan Pemisah -->
+                    <div id="google-btn-container"></div>
+                    <div class="divider"><span>ATAU</span></div>
+
+                    <form id="login-form-element">
+                        <div class="form-group">
+                            <label for="login-username">Username</label>
+                            <input type="text" id="login-username" name="username" required autocomplete="username">
+                        </div>
+                        <div class="form-group">
+                            <label for="login-password">Password</label>
+                            <input type="password" id="login-password" name="password" required autocomplete="current-password">
+                        </div>
+                        <button type="submit" class="btn btn-primary">Masuk</button>
+                    </form>
+                    <p class="auth-switch">
+                        Belum punya akun?
+                        <a href="#" id="show-register">Daftar di sini</a>
+                    </p>
+                </div>
+                <div id="register-form" class="auth-form">
+                    <h3>Daftar Akun Baru</h3>
+                    <form id="register-form-element">
+                        <div class="form-group">
+                            <label for="register-username">Username</label>
+                            <input type="text" id="register-username" name="username" required autocomplete="username">
+                        </div>
+                        <div class="form-group">
+                            <label for="register-email">Email UNNES</label>
+                            <input type="email" id="register-email" name="email"
+                                   placeholder="nama@students.unnes.ac.id atau nama@mail.unnes.ac.id" required>
+                            <small class="form-help">Gunakan email domain @students.unnes.ac.id atau @mail.unnes.ac.id</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="register-password">Password</label>
+                            <input type="password" id="register-password" name="password" required autocomplete="new-password">
+                        </div>
+                        <button type="submit" class="btn btn-primary">Daftar</button>
+                    </form>
+                    <p class="auth-switch">
+                        Sudah punya akun?
+                        <a href="#" id="show-login">Masuk di sini</a>
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <div id="dashboard-section" class="dashboard-section" style="display: none;">
+            <div class="container dashboard-container">
+                <nav class="sidebar" aria-label="Main navigation">
+                    <ul class="sidebar-menu">
+                        <li><a href="#" id="nav-upload" class="nav-link">Upload Dokumen</a></li>
+                        <li><a href="#" id="nav-documents" class="nav-link">Daftar Dokumen</a></li>
+                        <li><a href="#" id="nav-chat" class="nav-link active" aria-current="page">Chat dengan Dokumen</a></li>
+                        <li><a href="#" id="nav-profile" class="nav-link">Profil</a></li>
+                        <li><a href="#" id="nav-faq" class="nav-link">FAQ</a></li>
+                        <li id="nav-admin-item" style="display: none;"><a href="#" id="nav-admin" class="nav-link">Admin Panel</a></li>
+                    </ul>
+                </nav>
+
+                <div class="content-area">
+                    <section id="upload-section" class="content-section">
+                        <h2 id="upload-heading">Upload Dokumen</h2>
+                        <div class="upload-container">
+                            <form id="upload-form" class="upload-form">
+                                <div class="upload-area" id="upload-area" role="button" tabindex="0" aria-label="Area upload file: Klik atau seret file ke sini">
+                                    <div class="upload-icon" aria-hidden="true">📤</div>
+                                    <p>Seret &amp; letakkan file di sini, atau klik untuk memilih</p>
+                                    <p class="upload-help">Format: PDF, DOCX, TXT (Maks. 5 file)</p>
+                                    <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc,.txt" hidden>
+                                </div>
+                                <div id="file-list" class="file-list" aria-live="polite"></div>
+                                <button type="submit" id="upload-btn" class="btn btn-primary" disabled>Upload Dokumen</button>
+                            </form>
+                        </div>
+                    </section>
+                    <section id="documents-section" class="content-section">
+                        <h2 id="documents-heading">Daftar Dokumen Saya</h2>
+                        <div id="documents-container" class="documents-container"></div>
+                    </section>
+                    
+                    <section id="chat-section" class="content-section active" aria-labelledby="chat-heading">
+                        <h2 id="chat-heading">Chat dengan Dokumen</h2>
+                        <div class="chat-container">
+                            <div class="chat-sidebar">
+                                <div class="chat-documents-selector">
+                                    <h3>Pilih Dokumen untuk Sesi Chat</h3>
+                                    <div id="chat-document-list" class="chat-document-list"></div>
+                                </div>
+                                <div id="predefined-questions-container" class="predefined-questions-container">
+                                </div>
+                            </div>
+                            <div class="chat-area">
+                                <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+                                <div class="chat-input-container">
+                                    <form id="chat-form" class="chat-form">
+                                        <input type="text" id="chat-input" placeholder="Pilih dokumen dan mulai sesi..." disabled autocomplete="off" aria-label="Input pertanyaan chat">
+                                        <button type="submit" id="chat-send-btn" class="btn btn-primary" disabled>Kirim</button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                    
+                    <section id="profile-section" class="content-section">
+                        <h2 id="profile-heading">Profil Pengguna</h2>
+                        <div class="profile-container">
+                            <div class="profile-card">
+                                <div class="profile-avatar" aria-hidden="true">👤</div>
+                                <div class="profile-info">
+                                    <h3 id="profile-username-display" class="profile-username-text">Username</h3>
+                                    <p id="profile-email-display" class="profile-email-text">email@unnes.ac.id</p>
+                                    <span id="profile-role-display" class="role-badge">user</span>
+                                </div>
+                            </div>
+                            <div class="api-info-card">
+                                <h3>Informasi Sistem & Konektivitas</h3>
+                                <div id="system-info-content">
+                                    <p>Memuat informasi sistem...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                     <section id="faq-section" class="content-section">
+                        <h2 id="faq-heading">Frequently Asked Questions (FAQ)</h2>
+                        <div class="faq-container">
+                             <div class="faq-item">
+                                <button class="faq-question">Apa itu UNNES Document Chat System?</button>
+                                <div class="faq-answer">
+                                    <p>Ini adalah sebuah platform yang memungkinkan mahasiswa dan staf UNNES untuk mengunggah dokumen dan berinteraksi dengan dokumen tersebut menggunakan teknologi AI yang berjalan secara lokal menggunakan Ollama.</p>
+                                </div>
+                            </div>
+                             <div class="faq-item">
+                                <button class="faq-question">Bagaimana riwayat chat disimpan?</button>
+                                <div class="faq-answer">
+                                    <p>Riwayat chat sekarang disimpan per "sesi". Setiap kali Anda memilih satu atau beberapa dokumen dan memulai chat, itu akan menjadi sesi yang unik.</p>
+                                </div>
+                            </div>
+                             <div class="faq-item">
+                                <button class="faq-question">Bisakah saya chat dengan beberapa dokumen sekaligus?</button>
+                                <div class="faq-answer">
+                                    <p>Ya. Di halaman "Chat dengan Dokumen", Anda dapat mencentang beberapa dokumen sekaligus. Setelah itu, klik tombol "Mulai Sesi Chat".</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                     <section id="admin-section" class="content-section" aria-labelledby="admin-heading">
+                        <h2 id="admin-heading">Panel Administrator</h2>
+                        <div class="admin-container">
+                            <div class="admin-stats">
+                                <div class="stat-card">
+                                    <h3>Total Pengguna</h3>
+                                    <span id="stat-users" class="stat-number">0</span>
+                                </div>
+                                <div class="stat-card">
+                                    <h3>Total Dokumen</h3>
+                                    <span id="stat-documents" class="stat-number">0</span>
+                                </div>
+                                <div class="stat-card">
+                                    <h3>Total Sesi Chat</h3>
+                                    <span id="stat-chats" class="stat-number">0</span>
+                                </div>
+                            </div>
+                            <nav class="admin-tabs" aria-label="Admin sections">
+                                <button class="admin-tab-btn active" data-tab="users" role="tab" aria-controls="admin-users-tab" aria-selected="true">Kelola Pengguna</button>
+                                <button class="admin-tab-btn" data-tab="documents" role="tab" aria-controls="admin-documents-tab" aria-selected="false">Kelola Dokumen</button>
+                                <button class="admin-tab-btn" data-tab="activity" role="tab" aria-controls="admin-activity-tab" aria-selected="false">Aktivitas Terbaru</button>
+                            </nav>
+                            <div id="admin-users-tab" class="admin-tab-content active" role="tabpanel">
+                                <h3>Daftar Pengguna</h3>
+                                <div id="admin-users-list" class="admin-list"></div>
+                            </div>
+                            <div id="admin-documents-tab" class="admin-tab-content" role="tabpanel">
+                                <h3>Daftar Semua Dokumen</h3>
+                                <div id="admin-documents-list" class="admin-list"></div>
+                            </div>
+                            <div id="admin-activity-tab" class="admin-tab-content" role="tabpanel">
+                                <h3>Aktivitas Terbaru Sistem</h3>
+                                <div id="admin-activity-list" class="admin-list"></div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="alert-container" class="alert-container" aria-live="assertive"></div>
+    <div id="confirmation-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <h3 id="modal-title" class="modal-title-text">Konfirmasi</h3>
+            <p id="modal-message" class="modal-message-text">Apakah Anda yakin?</p>
+            <div class="modal-actions">
+                <button id="modal-cancel" class="btn btn-secondary">Batal</button>
+                <button id="modal-confirm" class="btn btn-danger">Ya, Lanjutkan</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js" defer></script>
+</body>
+</html>

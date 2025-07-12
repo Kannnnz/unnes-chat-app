@@ -1,0 +1,30 @@
+
+# FastAPI and Server
+fastapi
+uvicorn[standard]
+gunicorn
+
+# Configuration and Database
+python-dotenv
+psycopg2-binary # Menggantikan mysql-connector-python
+
+# Security and Authentication
+bcrypt
+PyJWT
+google-auth
+
+# LangChain Core and RAG Components
+langchain
+langchain-core
+langchain-community
+langchain-google-genai
+
+# Vector Store
+faiss-cpu
+
+# Document Loaders
+pypdf
+docx2txt
+
+# Other utilities
+tiktoken
