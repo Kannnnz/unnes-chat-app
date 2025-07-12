@@ -1,114 +1,94 @@
-# app/api/routers/auth.py
+# file: setup.py
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
-from datetime import datetime, timedelta
-from psycopg2.extras import DictCursor
+import psycopg2
+import sys
+from pathlib import Path
+from datetime import datetime
 
-# Import untuk Google Auth
-from google.oauth2 import id_token
-from google.auth.transport import requests
+# Menambahkan path proyek agar bisa mengimpor dari 'app'
+current_dir = Path(__file__).parent
+sys.path.append(str(current_dir))
 
-from app.core import security, config
-from app.db.session import get_db_connection
-from app.schemas.user import UserCreate, Token, GoogleToken, UserPublic
-from app.api.deps import get_current_user, UserInDB
+try:
+    from app.core import config
+    # Pastikan file security.py sudah ada di app/core/
+    from app.core.security import get_password_hash
+except ImportError as e:
+    print(f"❌ Gagal mengimpor modul yang dibutuhkan: {e}")
+    sys.exit(1)
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
-
-@router.post("/register", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
-def register_user(user: UserCreate):
-    hashed_password = security.get_password_hash(user.password)
-    role = 'admin' if user.email.endswith('@mail.unnes.ac.id') else 'user'
-    
-    with get_db_connection() as conn:
-        cursor = conn.cursor(cursor_factory=DictCursor)
-        try:
-            cursor.execute(
-                "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s) RETURNING id, username, email, role, created_at",
-                (user.username, user.email, hashed_password, role)
-            )
-            new_user = cursor.fetchone()
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise HTTPException(status_code=400, detail=f"Gagal mendaftarkan pengguna: {e}")
-        finally:
-            cursor.close()
-    
-    return new_user
-
-@router.post("/token", response_model=Token)
-def login_with_password(form_data: OAuth2PasswordRequestForm = Depends()):
-    with get_db_connection() as conn:
-        cursor = conn.cursor(cursor_factory=DictCursor)
-        cursor.execute("SELECT * FROM users WHERE username = %s", (form_data.username,))
-        user = cursor.fetchone()
-        cursor.close()
-    
-    if not user or not security.verify_password(form_data.password, user["password_hash"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    access_token_expires = timedelta(minutes=config.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(
-        data={"sub": user["username"]}, expires_delta=access_token_expires
-    )
-    
-    return {"access_token": access_token, "token_type": "bearer", "role": user["role"]}
-
-@router.post("/google", response_model=Token)
-def login_with_google(token_data: GoogleToken):
-    if not config.GOOGLE_CLIENT_ID:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Google Login is not configured on the server."
-        )
+def setup_database():
     try:
-        id_info = id_token.verify_oauth2_token(
-            token_data.token, requests.Request(), config.GOOGLE_CLIENT_ID
-        )
-        email = id_info['email']
-
-        if not (email.endswith('@students.unnes.ac.id') or email.endswith('@mail.unnes.ac.id')):
-            raise HTTPException(status_code=403, detail="Hanya akun email UNNES yang diizinkan.")
-
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate Google token"
-        )
-
-    username = email.split('@')[0]
-    with get_db_connection() as conn:
-        cursor = conn.cursor(cursor_factory=DictCursor)
-        cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
-        user = cursor.fetchone()
-
-        if not user:
-            # Pengguna baru dari Google
-            role = 'admin' if email.endswith('@mail.unnes.ac.id') else 'user'
-            # Buat hash password acak karena pengguna ini hanya akan login via Google
-            dummy_password = security.get_password_hash(f"google_sso_{datetime.now().timestamp()}")
-            cursor.execute(
-                "INSERT INTO users (username, email, password_hash, role, is_google_user) VALUES (%s, %s, %s, %s, %s) RETURNING *",
-                (username, email, dummy_password, role, True)
-            )
-            user = cursor.fetchone()
-            conn.commit()
+        if not config.DATABASE_URL:
+            print("❌ DATABASE_URL tidak ditemukan. Proses setup dibatalkan.")
+            return False
+            
+        print("🚀 Mencoba terhubung ke database PostgreSQL...")
+        conn = psycopg2.connect(config.DATABASE_URL)
+        cursor = conn.cursor()
+        print("✅ Berhasil terhubung.")
         
+        print("⚠️  Menghapus tabel lama (jika ada)...")
+        cursor.execute('DROP TABLE IF EXISTS chat_history, documents, users CASCADE;')
+        
+        print("🏗️  Membuat struktur tabel baru...")
+        # PENTING: Mengubah kolom 'password' menjadi 'password_hash'
+        cursor.execute('''
+        CREATE TABLE users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(255) UNIQUE NOT NULL,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            password_hash VARCHAR(256),
+            role VARCHAR(50) NOT NULL DEFAULT 'user',
+            is_google_user BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT a_databasenow()
+        );
+        ''')
+        cursor.execute('''
+        CREATE TABLE documents (
+            id UUID PRIMARY KEY,
+            username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            upload_date TIMESTAMP WITH TIME ZONE DEFAULT a_database_now(),
+            file_size BIGINT,
+            is_indexed BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        ''')
+        cursor.execute('''
+        CREATE TABLE chat_history (
+            id SERIAL PRIMARY KEY,
+            session_id VARCHAR(255) NOT NULL,
+            username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+            message TEXT NOT NULL,
+            response TEXT NOT NULL,
+            timestamp TIMESTAMP WITH TIME ZONE DEFAULT a_database_now(),
+            document_ids JSONB
+        );
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history (session_id);')
+        
+        print("🔑 Membuat akun admin default...")
+        # PENTING: Menggunakan 'password_hash' dan fungsi hash dari security.py
+        admin_pass_hash = get_password_hash(config.DEFAULT_ADMIN_PASSWORD)
+        cursor.execute(
+            "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+            ('admin_unnes', 'admin@mail.unnes.ac.id', admin_pass_hash, 'admin')
+        )
+        
+        conn.commit()
         cursor.close()
-    
-    access_token_expires = timedelta(minutes=config.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(
-        data={"sub": user["username"]}, expires_delta=access_token_expires
-    )
+        conn.close()
+        print("✅ Setup database selesai dengan sukses!")
+        return True
 
-    return {"access_token": access_token, "token_type": "bearer", "role": user["role"]}
+    except Exception as e:
+        print(f"\n❌ GAGAL melakukan setup database: {e}")
+        # Jika ada koneksi, rollback dan tutup
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
+        return False
 
-@router.get("/profile", response_model=UserPublic, tags=["User"])
-def read_current_user(current_user: UserInDB = Depends(get_current_user)):
-    return current_user
+if __name__ == "__main__":
+    setup_database()
