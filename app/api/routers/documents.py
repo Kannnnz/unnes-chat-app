@@ -3,6 +3,8 @@ from typing import List
 import uuid
 from pathlib import Path
 from datetime import datetime 
+from psycopg2.extras import DictCursor
+
 
 from app.core import config
 from app.db.session import get_db_connection
@@ -61,7 +63,7 @@ async def upload_documents(files: List[UploadFile] = File(...), current_user: di
 @router.get("/documents", tags=["Documents"])
 def get_documents(current_user: dict = Depends(get_current_user)):
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         if current_user['role'] == 'admin':
             cursor.execute("SELECT id, username, filename, upload_date FROM documents ORDER BY upload_date DESC")
         else:
