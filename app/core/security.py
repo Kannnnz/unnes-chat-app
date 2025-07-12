@@ -1,8 +1,8 @@
-# app/core/security.py
+# file: app/core/security.py
 
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
-from jose import JWTError, jwt
+from jose import jwt
 from . import config
 
 # Konteks untuk hashing password
