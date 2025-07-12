@@ -22,6 +22,7 @@ langchain
 langchain-core
 langchain-community
 langchain-google-genai
+google.generativeai
 
 # Vector Store
 faiss-cpu
