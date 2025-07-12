@@ -10,7 +10,7 @@ python-dotenv
 psycopg2-binary # Menggantikan mysql-connector-python
 
 # Security and Authentication
-bcrypt
+passlib[bcrypt]
 PyJWT
 google-auth
 email-validator
