@@ -12,6 +12,7 @@ psycopg2-binary # Menggantikan mysql-connector-python
 bcrypt
 PyJWT
 google-auth
+email-validator
 
 # LangChain Core and RAG Components
 langchain
