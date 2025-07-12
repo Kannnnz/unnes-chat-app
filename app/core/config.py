@@ -11,7 +11,7 @@ VECTOR_STORE_DIR = BASE_DIR / "vector_store"
 FAISS_INDEX_PATH = VECTOR_STORE_DIR / "unnes_docs.faiss"
 
 # JWT Settings
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = os.getenv("APP_SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
@@ -33,4 +33,4 @@ DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "adminUnnesKuat123!
 
 # Validasi saat startup
 if not SECRET_KEY or SECRET_KEY == "cad75c9b87eabacbee7297e8bddc00a8d95232f5d2a84f31790686ec6d406e80":
-    raise ValueError("SECRET_KEY tidak diatur di file .env. Ini sangat tidak aman.")
+    raise ValueError("APP_SECRET_KEY tidak diatur di file .env. Ini sangat tidak aman.")
