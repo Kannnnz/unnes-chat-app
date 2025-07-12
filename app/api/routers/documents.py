@@ -1,6 +1,4 @@
-# file: app/api/routers/documents.py
-
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks
 from typing import List
 import uuid
 from pathlib import Path
@@ -16,14 +14,46 @@ from app.schemas.document import DocumentInfo
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
+def _process_and_index_file(doc_id: str, file_path: Path, filename: str, owner: str):
+    """
+    Fungsi ini berjalan di background untuk memproses dan mengindeks file.
+    """
+    print(f"Starting background processing for: {filename}")
+    try:
+        chunks = load_and_split_document(file_path)
+        if chunks:
+            for chunk in chunks:
+                chunk.metadata.update({"doc_id": doc_id, "filename": filename, "owner": owner})
+            
+            rag_service.add_documents_to_index(chunks)
+            
+            # Update status di database bahwa indexing sudah selesai
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE documents SET is_indexed = TRUE WHERE id = %s", (doc_id,))
+                    conn.commit()
+            print(f"Successfully processed and indexed: {filename}")
+        else:
+            print(f"No content to process for: {filename}")
+    except Exception as e:
+        print(f"❌ BACKGROUND TASK FAILED for {filename}: {e}")
+        # Di sini Anda bisa menambahkan logika untuk menandai file sebagai gagal proses di DB
+        pass
+
+
 @router.post("/upload")
-async def upload_documents(files: List[UploadFile] = File(...), current_user: UserInDB = Depends(get_current_user)):
+async def upload_documents(
+    files: List[UploadFile],
+    background_tasks: BackgroundTasks,
+    current_user: UserInDB = Depends(get_current_user)
+):
     if not rag_service.is_ready:
         raise HTTPException(status_code=503, detail="Sistem RAG tidak siap.")
     
     username = current_user.username
     user_dir = config.UPLOAD_DIR / username
     user_dir.mkdir(exist_ok=True)
+    
     uploaded_docs_info = []
 
     for file in files:
@@ -34,36 +64,30 @@ async def upload_documents(files: List[UploadFile] = File(...), current_user: Us
             content = await file.read()
             with open(file_path, "wb") as f:
                 f.write(content)
-            
-            # PERBAIKAN DI SINI: Menghapus str() agar objek Path yang dikirim
-            chunks = load_and_split_document(file_path)
-            
-            if not chunks: 
-                file_path.unlink()
-                continue
 
-            for chunk in chunks:
-                chunk.metadata.update({"doc_id": doc_id, "filename": file.filename, "owner": username})
-            
-            rag_service.add_documents_to_index(chunks)
-
+            # 1. Simpan info dokumen ke DB dengan status is_indexed = FALSE
             with get_db_connection() as conn:
-                cursor = conn.cursor()
-                query = "INSERT INTO documents (id, username, filename, file_path, upload_date, file_size, is_indexed) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-                # Simpan path sebagai string absolut
-                values = (doc_id, username, file.filename, str(file_path.resolve()), datetime.now(), len(content), True)
-                cursor.execute(query, values)
-                conn.commit()
-                cursor.close()
+                with conn.cursor() as cursor:
+                    query = "INSERT INTO documents (id, username, filename, file_path, upload_date, file_size, is_indexed) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                    values = (doc_id, username, file.filename, str(file_path.resolve()), datetime.now(), len(content), False)
+                    cursor.execute(query, values)
+                    conn.commit()
+
+            # 2. Tambahkan proses berat ke background task
+            background_tasks.add_task(_process_and_index_file, doc_id, file_path, file.filename, username)
             
+            # 3. Siapkan respons sukses untuk dikirim langsung ke user
             uploaded_docs_info.append({"id": doc_id, "filename": file.filename, "upload_date": datetime.now()})
 
         except Exception as e:
+            # Jika ada error sebelum background task, hapus file yang mungkin sudah terbuat
             if file_path.exists():
                 file_path.unlink()
-            raise HTTPException(status_code=500, detail=f"Gagal memproses file {file.filename}: {e}")
+            raise HTTPException(status_code=500, detail=f"Gagal menyimpan file {file.filename}: {e}")
 
-    return {"uploaded_documents": uploaded_docs_info}
+    # 4. Kirim respons sukses ke user SEGERA, tanpa menunggu indexing selesai.
+    return {"message": "File diterima dan sedang diproses di latar belakang.", "uploaded_files": uploaded_docs_info}
+
 
 @router.get("/documents", response_model=list[DocumentInfo])
 def get_documents(current_user: UserInDB = Depends(get_current_user)):
