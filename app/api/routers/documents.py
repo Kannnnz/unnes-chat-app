@@ -28,36 +28,48 @@ async def upload_documents(files: List[UploadFile] = File(...), current_user: Us
 
     for file in files:
         doc_id = str(uuid.uuid4())
-        # Pastikan path absolut untuk disimpan di DB dan diakses kemudian
         file_path = user_dir / f"{doc_id}{Path(file.filename).suffix}"
         
-        content = await file.read()
-        with open(file_path, "wb") as f:
-            f.write(content)
-        
-        chunks = load_and_split_document(str(file_path))
-        if not chunks:
-            continue
+        try:
+            content = await file.read()
+            with open(file_path, "wb") as f:
+                f.write(content)
+            
+            # PERBAIKAN DI SINI: Menghapus str() agar objek Path yang dikirim
+            chunks = load_and_split_document(file_path)
+            
+            if not chunks: 
+                file_path.unlink()
+                continue
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            query = "INSERT INTO documents (id, username, filename, file_path, upload_date, file_size) VALUES (%s, %s, %s, %s, %s, %s)"
-            values = (doc_id, username, file.filename, str(file_path.resolve()), datetime.now(), len(content))
-            cursor.execute(query, values)
-            conn.commit()
-            cursor.close()
-        
-        uploaded_docs_info.append({"id": doc_id, "filename": file.filename, "upload_date": datetime.now()})
+            for chunk in chunks:
+                chunk.metadata.update({"doc_id": doc_id, "filename": file.filename, "owner": username})
+            
+            rag_service.add_documents_to_index(chunks)
+
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                query = "INSERT INTO documents (id, username, filename, file_path, upload_date, file_size, is_indexed) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                # Simpan path sebagai string absolut
+                values = (doc_id, username, file.filename, str(file_path.resolve()), datetime.now(), len(content), True)
+                cursor.execute(query, values)
+                conn.commit()
+                cursor.close()
+            
+            uploaded_docs_info.append({"id": doc_id, "filename": file.filename, "upload_date": datetime.now()})
+
+        except Exception as e:
+            if file_path.exists():
+                file_path.unlink()
+            raise HTTPException(status_code=500, detail=f"Gagal memproses file {file.filename}: {e}")
 
     return {"uploaded_documents": uploaded_docs_info}
 
-# PENTING: Mengubah route dari "" menjadi "/documents"
 @router.get("/documents", response_model=list[DocumentInfo])
 def get_documents(current_user: UserInDB = Depends(get_current_user)):
     with get_db_connection() as conn:
         cursor = conn.cursor(cursor_factory=DictCursor)
         cursor.execute("SELECT id, filename, upload_date FROM documents WHERE username = %s ORDER BY upload_date DESC", (current_user.username,))
-        docs_rows = cursor.fetchall()
+        docs = cursor.fetchall()
         cursor.close()
-        # PENTING: Mengubah setiap baris menjadi dictionary
-        return [dict(row) for row in docs_rows]
+        return [dict(row) for row in docs]
