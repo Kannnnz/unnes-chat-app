@@ -1,29 +1,32 @@
-# file: setup.py
+# file: setup.py (Diperbarui untuk PostgreSQL)
 
 import psycopg2
-import sys
-from pathlib import Path
+import bcrypt
 from datetime import datetime
+from pathlib import Path
+import sys
 
-# Menambahkan path proyek agar bisa mengimpor dari 'app'
 current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
 
 try:
     from app.core import config
-    # Pastikan file security.py sudah ada di app/core/
-    from app.core.security import get_password_hash
-except ImportError as e:
-    print(f"❌ Gagal mengimpor modul yang dibutuhkan: {e}")
+except ImportError:
+    print("❌ Gagal mengimpor konfigurasi.")
     sys.exit(1)
+
+def hash_password(password: str) -> str:
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
 
 def setup_database():
     try:
         if not config.DATABASE_URL:
-            print("❌ DATABASE_URL tidak ditemukan. Proses setup dibatalkan.")
+            print("❌ DATABASE_URL tidak ditemukan di file .env. Proses setup dibatalkan.")
             return False
             
-        print("🚀 Mencoba terhubung ke database PostgreSQL...")
+        print(f"🚀 Mencoba terhubung ke database PostgreSQL...")
         conn = psycopg2.connect(config.DATABASE_URL)
         cursor = conn.cursor()
         print("✅ Berhasil terhubung.")
@@ -32,27 +35,24 @@ def setup_database():
         cursor.execute('DROP TABLE IF EXISTS chat_history, documents, users CASCADE;')
         
         print("🏗️  Membuat struktur tabel baru...")
-        # PENTING: Mengubah kolom 'password' menjadi 'password_hash'
         cursor.execute('''
         CREATE TABLE users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(255) UNIQUE NOT NULL,
+            username VARCHAR(255) PRIMARY KEY,
             email VARCHAR(255) UNIQUE NOT NULL,
-            password_hash VARCHAR(256),
+            password VARCHAR(256) NOT NULL,
             role VARCHAR(50) NOT NULL DEFAULT 'user',
-            is_google_user BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT a_databasenow()
+            created_at TIMESTAMP NOT NULL
         );
         ''')
         cursor.execute('''
         CREATE TABLE documents (
-            id UUID PRIMARY KEY,
+            id VARCHAR(36) PRIMARY KEY,
             username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
             filename TEXT NOT NULL,
             file_path TEXT NOT NULL,
-            upload_date TIMESTAMP WITH TIME ZONE DEFAULT a_database_now(),
+            upload_date TIMESTAMP NOT NULL,
             file_size BIGINT,
-            is_indexed BOOLEAN NOT NULL DEFAULT FALSE
+            is_indexed BOOLEAN NOT NULL DEFAULT false
         );
         ''')
         cursor.execute('''
@@ -62,18 +62,17 @@ def setup_database():
             username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
             message TEXT NOT NULL,
             response TEXT NOT NULL,
-            timestamp TIMESTAMP WITH TIME ZONE DEFAULT a_database_now(),
+            timestamp TIMESTAMP NOT NULL,
             document_ids JSONB
         );
+        CREATE INDEX idx_chat_history_session_id ON chat_history (session_id);
         ''')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history (session_id);')
         
         print("🔑 Membuat akun admin default...")
-        # PENTING: Menggunakan 'password_hash' dan fungsi hash dari security.py
-        admin_pass_hash = get_password_hash(config.DEFAULT_ADMIN_PASSWORD)
+        admin_pass = hash_password(config.DEFAULT_ADMIN_PASSWORD) 
         cursor.execute(
-            "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s)",
-            ('admin_unnes', 'admin@mail.unnes.ac.id', admin_pass_hash, 'admin')
+            "INSERT INTO users (username, email, password, role, created_at) VALUES (%s, %s, %s, %s, %s)",
+            ('admin_unnes', 'admin@mail.unnes.ac.id', admin_pass, 'admin', datetime.now())
         )
         
         conn.commit()
@@ -84,10 +83,6 @@ def setup_database():
 
     except Exception as e:
         print(f"\n❌ GAGAL melakukan setup database: {e}")
-        # Jika ada koneksi, rollback dan tutup
-        if 'conn' in locals() and conn:
-            conn.rollback()
-            conn.close()
         return False
 
 if __name__ == "__main__":
