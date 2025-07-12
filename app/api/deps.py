@@ -2,6 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 from typing import Dict
+from psycopg2.extras import DictCursor
 
 from app.core import config
 from app.db.session import get_db_connection
@@ -23,7 +24,7 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict:
         raise credentials_exception
     
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         cursor.execute("SELECT username, email, role FROM users WHERE username = %s", (username,))
         user = cursor.fetchone()
         cursor.close()
