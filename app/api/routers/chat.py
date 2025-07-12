@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 import json
 from datetime import datetime
 from typing import List
+from psycopg2.extras import DictCursor
+
 
 from app.db.session import get_db_connection
 from app.api.deps import get_current_user
@@ -49,7 +51,7 @@ def get_chat_session_history(session_id: str, current_user: dict = Depends(get_c
     Retrieves the chat history for a specific session ID belonging to the current user.
     """
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         query = """
             SELECT message, response, timestamp 
             FROM chat_history 
