@@ -1,90 +1,140 @@
-# file: app/api/routers/documents.py
+# file: app/services/rag_service.py
 
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks
-from typing import List
-import uuid
 from pathlib import Path
-from datetime import datetime
-from psycopg2.extras import DictCursor
+from langchain_community.document_loaders import Docx2txtLoader, TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain.prompts import PromptTemplate
+from langchain.chains import RetrievalQA
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.schema.document import Document
+import google.generativeai as genai
+import pypdf
 import traceback
 
 from app.core import config
-from app.db.session import get_db_connection
-from app.api.deps import get_current_user
-from app.schemas.user import UserInDB
-from app.services.rag_service import rag_service, load_and_split_document
-from app.schemas.document import DocumentInfo
 
-router = APIRouter(prefix="/documents", tags=["Documents"])
+def load_and_split_document(file_path: Path):
+    """
+    Memuat dokumen dan membaginya menjadi beberapa bagian dengan cara yang hemat memori.
+    PDF diproses halaman per halaman untuk menghindari kehabisan RAM.
+    """
+    ext = file_path.suffix.lower()
+    documents = []
 
-def _process_and_index_file(doc_id: str, file_path: Path, filename: str, owner: str):
-    """Fungsi ini berjalan di background untuk memproses dan mengindeks file."""
-    print(f"✅ Starting background processing for: {filename}")
     try:
-        chunks = load_and_split_document(file_path)
-        if chunks:
-            for chunk in chunks:
-                chunk.metadata.update({"doc_id": doc_id, "filename": filename, "owner": owner})
-            
-            rag_service.add_documents_to_index(chunks)
-            
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("UPDATE documents SET is_indexed = TRUE WHERE id = %s", (doc_id,))
-                    conn.commit()
-            print(f"✅ Successfully processed and indexed: {filename}")
+        if ext == '.pdf':
+            print(f"Optimized PDF processing for: {file_path.name}")
+            with open(file_path, "rb") as pdf_file:
+                reader = pypdf.PdfReader(pdf_file)
+                for i, page in enumerate(reader.pages):
+                    text = page.extract_text()
+                    if text:  # Hanya proses halaman yang mengandung teks
+                        documents.append(Document(
+                            page_content=text,
+                            metadata={"source": str(file_path), "page": i}
+                        ))
+        elif ext == '.docx':
+            loader = Docx2txtLoader(str(file_path))
+            documents = loader.load()
+        elif ext == '.txt':
+            loader = TextLoader(str(file_path), encoding='utf-8')
+            documents = loader.load()
         else:
-            print(f"⚠️ No content to process for: {filename}. It might be empty or unsupported.")
+            print(f"Unsupported file type: {ext}")
+            return []
+
+        if not documents:
+            print(f"Warning: No documents were loaded from {file_path.name}.")
+            return []
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=config.CHUNK_SIZE, 
+            chunk_overlap=config.CHUNK_OVERLAP
+        )
+        return text_splitter.split_documents(documents)
+
     except Exception as e:
-        print(f"❌ BACKGROUND TASK FAILED for {filename}:")
+        print(f"❌ Error loading document {file_path.name}:")
         traceback.print_exc()
+        return []
 
-@router.post("/upload")
-async def upload_documents(
-    files: List[UploadFile],
-    background_tasks: BackgroundTasks,
-    current_user: UserInDB = Depends(get_current_user)
-):
-    if not rag_service.is_ready:
-        raise HTTPException(status_code=503, detail="Sistem RAG tidak siap.")
-    
-    username = current_user.username
-    user_dir = config.UPLOAD_DIR / username
-    user_dir.mkdir(exist_ok=True)
-    
-    uploaded_docs_info = []
 
-    for file in files:
-        doc_id = str(uuid.uuid4())
-        file_path = user_dir / f"{doc_id}{Path(file.filename).suffix}"
+class RAGService:
+    def __init__(self):
+        self.is_ready = False
+        self.vector_store = None
+        self.retrieval_chain = None
+        self.embeddings = None
         
         try:
-            with open(file_path, "wb") as f:
-                content = await file.read()
-                f.write(content)
+            if not config.GOOGLE_API_KEY:
+                print("❌ CRITICAL ERROR: GOOGLE_API_KEY tidak diatur.")
+                return
 
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    query = "INSERT INTO documents (id, username, filename, file_path, upload_date, file_size, is_indexed) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-                    values = (doc_id, username, file.filename, str(file_path.resolve()), datetime.now(), len(content), False)
-                    cursor.execute(query, values)
-                    conn.commit()
+            genai.configure(api_key=config.GOOGLE_API_KEY)
+            self.embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+            
+            if config.FAISS_INDEX_PATH.exists():
+                print(f"🚀 Loading existing FAISS index from {config.FAISS_INDEX_PATH}...")
+                self.vector_store = FAISS.load_local(
+                    folder_path=str(config.FAISS_INDEX_PATH.parent), 
+                    index_name=config.FAISS_INDEX_PATH.stem,
+                    embeddings=self.embeddings,
+                    allow_dangerous_deserialization=True
+                )
+            else:
+                print("⚠️ FAISS index not found. Creating a new empty index.")
+                dummy_texts = ["init"]
+                self.vector_store = FAISS.from_texts(texts=dummy_texts, embedding=self.embeddings)
+                self.vector_store.delete(self.vector_store.index_to_docstore_id.values())
+                self.vector_store.save_local(
+                    folder_path=str(config.FAISS_INDEX_PATH.parent),
+                    index_name=config.FAISS_INDEX_PATH.stem
+                )
 
-            background_tasks.add_task(_process_and_index_file, doc_id, file_path, file.filename, username)
-            uploaded_docs_info.append({"id": doc_id, "filename": file.filename, "upload_date": datetime.now()})
-
+            self._create_retrieval_chain()
+            self.is_ready = True
+            print("✅ RAG components (Google Gemini) are ready.")
         except Exception as e:
-            if file_path.exists():
-                file_path.unlink()
-            raise HTTPException(status_code=500, detail=f"Gagal menyimpan file {file.filename}: {e}")
+            print(f"❌ CRITICAL ERROR: Failed to initialize RAG components.")
+            traceback.print_exc()
 
-    return {"message": "File diterima dan sedang diproses.", "uploaded_documents": uploaded_docs_info}
+    def _create_retrieval_chain(self):
+        llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3, convert_system_message_to_human=True)
+        prompt_template = """
+        Gunakan potongan konteks berikut untuk menjawab pertanyaan.
+        Jika tidak tahu jawabannya, katakan saja Anda tidak tahu. Jangan mencoba mengarang jawaban.
+        Konteks: {context}
+        Pertanyaan: {question}
+        Jawaban yang membantu:
+        """
+        prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+        self.retrieval_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=self.vector_store.as_retriever(search_kwargs={"k": 5}),
+            chain_type_kwargs={"prompt": prompt},
+            return_source_documents=True
+        )
 
-@router.get("/documents", response_model=list[DocumentInfo])
-def get_documents(current_user: UserInDB = Depends(get_current_user)):
-    with get_db_connection() as conn:
-        cursor = conn.cursor(cursor_factory=DictCursor)
-        cursor.execute("SELECT id, filename, upload_date, is_indexed FROM documents WHERE username = %s ORDER BY upload_date DESC", (current_user.username,))
-        docs = cursor.fetchall()
-        cursor.close()
-        return [dict(row) for row in docs]
+    def add_documents_to_index(self, documents):
+        if self.vector_store is not None and documents:
+            self.vector_store.add_documents(documents)
+            self.vector_store.save_local(
+                folder_path=str(config.FAISS_INDEX_PATH.parent),
+                index_name=config.FAISS_INDEX_PATH.stem
+            )
+            print(f"✅ Successfully added {len(documents)} chunks to FAISS index.")
+
+    def invoke_chain(self, query: str, document_ids: list):
+        if self.retrieval_chain:
+            result = self.retrieval_chain.invoke(query)
+            return result.get("result", "Tidak dapat menemukan jawaban.")
+        return "Sistem chat tidak siap."
+    
+    def rebuild_index(self):
+        pass
+
+rag_service = RAGService()
