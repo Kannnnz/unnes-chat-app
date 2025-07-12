@@ -1,3 +1,4 @@
+from psycopg2.extras import DictCursor
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 import bcrypt
@@ -28,7 +29,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 @router.post("/token", response_model=Token, tags=["Authentication"])
 def login_with_password(form_data: OAuth2PasswordRequestForm = Depends()):
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         cursor.execute("SELECT username, password, role FROM users WHERE username = %s", (form_data.username,))
         user_db = cursor.fetchone()
         cursor.close()
@@ -61,7 +62,7 @@ def login_with_google(token_data: GoogleToken):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hanya akun Google UNNES yang diizinkan.")
 
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         cursor.execute("SELECT username, role FROM users WHERE email = %s", (email,))
         user_db = cursor.fetchone()
 
