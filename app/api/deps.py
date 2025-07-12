@@ -1,39 +1,52 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-import jwt
-from typing import Dict
+from jose import JWTError, jwt
+from pydantic import ValidationError
 from psycopg2.extras import DictCursor
 
 from app.core import config
 from app.db.session import get_db_connection
+from app.schemas.user import UserInDB
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{config.API_V1_PREFIX}/auth/token")
 
-def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+def get_current_user(token: str = Depends(oauth2_scheme)) -> UserInDB:
     try:
-        payload = jwt.decode(token, config.SECRET_KEY, algorithms=[config.ALGORITHM])
+        payload = jwt.decode(token, config.APP_SECRET_KEY, algorithms=[config.ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
-            raise credentials_exception
-    except jwt.PyJWTError:
-        raise credentials_exception
-    
-    with get_db_connection() as conn:
-        cursor = conn.cursor(cursor_factory=DictCursor)
-        cursor.execute("SELECT username, email, role FROM users WHERE username = %s", (username,))
-        user = cursor.fetchone()
-        cursor.close()
-    
-    if user is None:
-        raise credentials_exception
-    return user
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-def require_admin(current_user: Dict = Depends(get_current_user)) -> Dict:
-    if current_user.get('role') != 'admin':
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    with get_db_connection() as conn:
+        # PENTING: Menggunakan DictCursor agar bisa mengambil kolom berdasarkan nama
+        cursor = conn.cursor(cursor_factory=DictCursor)
+        cursor.execute("SELECT id, username, email, role, created_at FROM users WHERE username = %s", (username,))
+        user_data = cursor.fetchone()
+        cursor.close()
+
+    if user_data is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return UserInDB(**user_data)
+
+def require_admin(current_user: UserInDB = Depends(get_current_user)):
+    if current_user.role != 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The user doesn't have enough privileges"
+        )
     return current_user
